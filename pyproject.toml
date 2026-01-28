@@ -1,7 +1,29 @@
 [project]
-name = "reinvent-ml"
+name = "reinvent-ml-service"
 version = "0.1.0"
-description = "Add your description here"
+description = "Host for SceneScript and other ML services for the ReInvent web app"
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+    "numpy==1.24.2",
+    "jupyter>=1.0.0",
+    "plotly>=5.18.0",
+    "pandas>=2.0.0",
+    "scipy>=1.10.0",
+    "projectaria-tools>=1.0.0",
+    "einops>=0.7.0",
+    "omegaconf>=2.3.0",
+    "torch==2.4.0",
+    "torchvision",  # Will automatically match compatible version for torch 2.4
+    "torchsparse @ git+https://github.com/mit-han-lab/torchsparse.git",
+]
+
+# Tell uv to look for CUDA 12.1 wheels specifically
+[[tool.uv.index]]
+name = "pytorch"
+url = "https://download.pytorch.org/whl/cu121"
+explicit = true  # Force torch to come from here, not PyPI
+
+[tool.uv.sources]
+torch = { index = "pytorch" }
+torchvision = { index = "pytorch" }
