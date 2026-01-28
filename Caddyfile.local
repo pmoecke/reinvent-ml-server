@@ -1,0 +1,16 @@
+(headers) {
+    encode gzip
+    header Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+}
+
+localhost {
+    import headers
+    reverse_proxy inference-service:8001
+}
+
+
+# Update cerficates for local setup (e.g. needed when thesting with `curl`)
+# $ docker cp supabase-caddy:/data/caddy/pki/authorities/local/root.crt ./caddy-local-root.crt
+# $ sudo mkdir -p /usr/local/share/ca-certificates/caddy
+# $ sudo cp caddy-local-root.crt /usr/local/share/ca-certificates/caddy/caddy-local-root.crt
+# $ sudo update-ca-certificates

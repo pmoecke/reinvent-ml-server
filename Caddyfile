@@ -1,0 +1,35 @@
+# Replace with your real domain pointing to the Runpod instance
+# https://[POD_ID]-[INTERNAL_PORT].proxy.runpod.net
+[POD_ID]-[INTERNAL_PORT].proxy.runpod.net {
+    encode zstd gzip
+    # TLS via Let's Encrypt (automatic)
+
+    @internal {
+        header X-Internal-Token "*"
+    }
+
+    # Optionally IP allowlist (your home/ETH IP ranges)
+    # @allowed {
+    #     remote_ip 203.0.113.0/24 130.60.0.0/16
+    # }
+    # respond @allowed 403
+
+    reverse_proxy inference:8000 {
+        header_up X-Forwarded-Proto {scheme}
+        header_up X-Forwarded-For   {remote_host}
+        header_up X-Forwarded-Host  {host}
+    }
+
+    # Rate limiting (simple)
+    # rate_limit {
+    #     zone api {
+    #         key {remote_host}
+    #         events 30 / 1m
+    #         burst 20
+    #     }
+    # }
+    # handle_path /v1/* {
+    #     rate_limit api
+    # }
+}
+

@@ -6,5 +6,8 @@ dist/
 wheels/
 *.egg-info
 
+# Scenescripts weights
+*/weights
+
 # Virtual environments
 .venv

@@ -1,0 +1,88 @@
+  
+services:
+  inference-service:
+    build: .
+    # env_file:
+    #   - .env
+    environment:
+      # App
+      - APP_ENV=${APP_ENV}
+      - LOG_LEVEL=${LOG_LEVEL}
+      - WORKERS=${WORKERS}
+
+      # DB (Settings builds the URL from these)
+      - DB_NAME=${DB_NAME}
+      # - DB_HOST_EXTERNAL=${DB_HOST_EXTERNAL}
+      # - DB_HOST_INTERNAL=${DB_HOST_INTERNAL}
+      - DB_HOST_EXTERNAL=host.docker.internal
+      - DB_HOST_INTERNAL=host.docker.internal
+      - DB_USER=${DB_USER}
+      - DB_PASSWORD=${DB_PASSWORD}
+      - DB_PORT=${DB_PORT}
+      - PG_SEARCH_PATH=${PG_SEARCH_PATH}
+
+      # MinIO (kept for later)
+      - MINIO_ENDPOINT=${MINIO_ENDPOINT}
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY}
+      - MINIO_SECURE=${MINIO_SECURE}
+
+      # Embeddings
+      - EMBED_PROVIDER=${EMBED_PROVIDER}
+      - EMBED_MODEL_NAME=${EMBED_MODEL_NAME}
+      - EMBED_DIM=${EMBED_DIM}
+      - EMBED_DEVICE=${EMBED_DEVICE}
+      - EMBED_BATCH_SIZE=${EMBED_BATCH_SIZE}
+      - HF_HOME=${HF_HOME}
+      - HF_HUB_OFFLINE=${HF_HUB_OFFLINE}
+
+      # LLM (SwissAI / Apertus)
+      - LLM_API_BASE=${LLM_API_BASE}
+      - LLM_API_KEY=${LLM_API_KEY}
+      - LLM_MODEL=${LLM_MODEL}
+      # - LLM_TIMEOUT=${LLM_TIMEOUT}  # if you add it to Settings
+
+      # Table naming
+      - PG_SCHEMA=${PG_SCHEMA}
+      - PG_TABLE=${PG_TABLE}
+
+      # Security
+      - ML_API_TOKEN=${ML_API_TOKEN}
+    volumes:
+      - models_cache:/models    # persists HF cache
+    # depends_on:
+    #   postgres:
+    #     condition: service_healthy
+    #   alembic:
+    #     condition: service_completed_successfully
+    # ports: ["8001:8001"]
+    # Without using host.docker.internal, the "localhost" will be interpreted as a website
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    develop:
+      watch:
+        - action: sync
+          path: ./inference/src
+          target: /src/inference-service/src
+        - action: rebuild
+          path: ./inference/pyproject.toml
+        - action: rebuild
+          path: ./inference/src/reinvent_server/app.py
+  
+  caddy:
+    container_name: caddy-server
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile.local:/etc/caddy/Caddyfile:ro
+      # - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  models_cache:
+  caddy_data:
+  caddy_config:
