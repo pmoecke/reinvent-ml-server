@@ -1,4 +1,3 @@
-# app/startup.py
 import psycopg
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 from llama_index.llms.openai_like import OpenAILike

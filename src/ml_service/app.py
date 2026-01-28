@@ -3,14 +3,13 @@ import os
 from contextlib import asynccontextmanager
 
 from fastapi import APIRouter, Depends, FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from ml_service.dependencies import require_bearer
 from ml_service.routers import docling_router
 
 from .config import Settings
 from .startup import init_db, init_embedder, init_llm, init_pgvector
-
-from dotenv import load_dotenv
 
 health_router = APIRouter(prefix="/health", tags=["health"])
 
@@ -57,6 +56,14 @@ def create_app():
 
     app.include_router(health_router)
     app.include_router(docling_router.router)
+    # Add CORS middleware
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["localhost:3000"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
     @app.get("/health/ready", tags=["health"])
     def ready():

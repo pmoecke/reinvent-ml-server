@@ -1,6 +1,6 @@
-[build-system]
-requires = ["uv_build >= 0.8.12, <0.9.0"]
-build-backend = "uv_build"
+# [build-system]
+# requires = ["uv_build >= 0.8.12, <0.9.0"]
+# build-backend = "uv_build"
 
 [project]
 name = "reinvent-ml-service"
@@ -10,21 +10,21 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.118.2",
-    "llama-index>=0.14.4",
-    "llama-index-embeddings-huggingface>=0.6.1",
-    "llama-index-llms-huggingface-api>=0.6.1",
-    "llama-index-llms-openai-like>=0.5.3",
-    "llama-index-node-parser-docling>=0.4.1",
-    "llama-index-readers-docling>=0.4.1",
-    "llama-index-vector-stores-postgres>=0.7.0",
-    "numpy==1.24.2",
+    "uvicorn>=0.37.0",
+    "llama-index",
+    "llama-index-embeddings-huggingface",
+    "llama-index-llms-huggingface-api",
+    "llama-index-llms-openai-like",
+    "llama-index-readers-docling<0.4.1",
+    "llama-index-node-parser-docling<0.4.1",
+    "llama-index-vector-stores-postgres",
+    "psycopg[binary]>=3.2.10",
+    "python-dotenv>=1.1.1",
     "jupyter>=1.0.0",
     "plotly>=5.18.0",
     "pandas>=2.0.0",
     "scipy>=1.10.0",
     "projectaria-tools>=1.0.0",
-    "psycopg[binary]>=3.2.10",
-    "python-dotenv>=1.1.1",
     "einops>=0.7.0",
     "omegaconf>=2.3.0",
     "torch==2.4.0",
@@ -32,6 +32,13 @@ dependencies = [
     "torchsparse @ git+https://github.com/mit-han-lab/torchsparse.git",
     "uvicorn>=0.37.0",
 ]
+
+[tool.uv]
+package = false
+
+[tool.uv.extra-build-dependencies]
+# We force torch and numpy into the build environment so setup.py doesn't crash
+torchsparse = ["torch==2.4.0", "numpy==1.24.2"]
 
 # Tell uv to look for CUDA 12.1 wheels specifically
 [[tool.uv.index]]
@@ -42,6 +49,9 @@ explicit = true  # Force torch to come from here, not PyPI
 [tool.uv.sources]
 torch = { index = "pytorch" }
 torchvision = { index = "pytorch" }
+
+[tool.uv.build-backend]
+module-name = "ml_service"
 
 [project.scripts]
 start-server = "ml_service.app:start_server"
