@@ -6,12 +6,19 @@ from fastapi import APIRouter, Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from ml_service.dependencies import require_bearer
-from ml_service.routers import docling_router
+from ml_service.routers import docling_router, scenescript_router
 
 from .config import Settings
-from .startup import init_db, init_embedder, init_llm, init_pgvector
+from .startup import (
+    SceneScriptState,
+    init_db,
+    init_embedder,
+    init_llm,
+    init_pgvector,
+    init_scenescript,
+)
 
-health_router = APIRouter(prefix="/health", tags=["health"])
+# health_router = APIRouter(prefix="/health", tags=["health"])
 
 
 @asynccontextmanager
@@ -24,11 +31,22 @@ async def lifespan(app: FastAPI):
     if app.state.settings.HF_HUB_OFFLINE:
         os.environ["HF_HUB_OFFLINE"] = "1"
 
+    # Simple debug to verify env loading (avoid printing full secrets)
+    print(f"DEBUG Settings.APP_ENV={app.state.settings.APP_ENV}")
+    print(f"DEBUG Settings.ENABLE_RAG={app.state.settings.ENABLE_RAG}")
+    print(f"DEBUG Settings.ML_API_TOKEN set={app.state.settings.ML_API_TOKEN}")
+
     # Init resources
-    app.state.db = init_db(app.state.settings)
+    if app.state.settings.ENABLE_RAG:
+        app.state.db = init_db(app.state.settings)
+        app.state.vector_store = init_pgvector(app.state.settings)
+    else:
+        app.state.db = None
+        app.state.vector_store = None
+
     app.state.embedder = init_embedder(app.state.settings)  # may download/warmup
     app.state.llm = init_llm(app.state.settings)
-    app.state.vector_store = init_pgvector(app.state.settings)
+    app.state.scenescript = init_scenescript(app.state.settings)
 
     app.state.model_ready = True  # flip after warmup completes
     yield
@@ -40,9 +58,9 @@ async def lifespan(app: FastAPI):
     #     pass
 
 
-@health_router.get("/health/live")
-def live():
-    return {"ok": True}
+# @health_router.get("/health/live")
+# def live():
+#     return {"ok": True}
 
 
 def create_app():
@@ -51,15 +69,21 @@ def create_app():
         description=("Internal ML Service for the ReInvent app"),
         version="0.0.1",
         lifespan=lifespan,
-        dependencies=[Depends(require_bearer)],
     )
+    public_router = APIRouter()
 
-    app.include_router(health_router)
+    @public_router.get("/")
+    def health_check():
+        return {"status": "healthy", "service": "ml-service"}
+
+    app.include_router(public_router)
+    # app.include_router(health_router)
     app.include_router(docling_router.router)
+    app.include_router(scenescript_router.router)
     # Add CORS middleware
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["localhost:3000"],
+        allow_origins=["*"],
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
@@ -67,10 +91,15 @@ def create_app():
 
     @app.get("/health/ready", tags=["health"])
     def ready():
+        scenescript_state: SceneScriptState | None = getattr(app.state, "scenescript", None)
         return {
             "ready": bool(getattr(app.state, "model_ready", False)),
             "embed_model": app.state.settings.EMBED_MODEL_NAME,
             "hf_cache": os.environ.get("HF_HOME"),
+            "scenescript": {
+                "loaded": bool(scenescript_state and scenescript_state.model),
+                "device": getattr(scenescript_state, "device", None) if scenescript_state else None,
+            },
         }
 
     return app
@@ -87,7 +116,7 @@ def start_server():
     )
     parser.add_argument(
         "--port",
-        default=8001,
+        default=8000,
         help="The port to run the server",
     )
     parser.add_argument(

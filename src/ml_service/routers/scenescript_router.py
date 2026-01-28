@@ -1,30 +1,19 @@
 import os
 import shutil
+import sys
 
 import numpy as np
 import pandas as pd
 import torch
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
-from models.scenescript_models import InferenceResponse, ModelStatus, PointCloudData
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 
-# Try to import SceneScript modules with error handling
-try:
-    # from ....scenescript.src.data.language_sequence import LanguageSequence
-    from ....scenescript.src.data.point_cloud import PointCloud
-    from ....scenescript.src.networks.scenescript_model import SceneScriptWrapper
+from ml_service.dependencies import require_bearer
+from ml_service.models.scenescript_models import InferenceResponse, ModelStatus, PointCloudData
+from ml_service.startup import SceneScriptState
 
-    SCENESCRIPT_AVAILABLE = True
-except ImportError as e:
-    print(f"Warning: SceneScript modules not available: {e}")
-    SCENESCRIPT_AVAILABLE = False
-
-router = APIRouter(path="/scenescript")
-
-# Global model instance
-model_wrapper = None  # Add to lifespan or something
-SCENESCRIPT_DIR = ""
-UPLOADS_DIR = ""
-STORAGE_DIR = ""
+router = APIRouter(
+    prefix="/scenescript", tags=["scenescript"], dependencies=[Depends(require_bearer)]
+)
 
 
 def serialize_entity_params(params):
@@ -40,35 +29,38 @@ def serialize_entity_params(params):
     return serialized
 
 
-@router.on_event("startup")
-async def load_model():
-    """Load the SceneScript model on startup"""
-    global model_wrapper
-
-    if not SCENESCRIPT_AVAILABLE:
-        print("SceneScript modules not available. Model loading skipped.")
-        return
-
+def _get_pointcloud_class(base_dir: str):
+    """
+    Lazily import the SceneScript PointCloud class using the configured base_dir.
+    """
+    scenescript_root = base_dir  # .../reinvent-ml-server/scenescript
+    if scenescript_root not in sys.path:
+        sys.path.insert(0, scenescript_root)
     try:
-        # Change to the scenescript directory
-        os.chdir("/home/playboigeorgy/scenescript_clone_v3")
+        # Scenescript code expects `src` as a top-level package
+        from src.data.point_cloud import PointCloud  # type: ignore[import]
+    except ImportError as e:  # pragma: no cover - optional dependency
+        raise HTTPException(
+            status_code=503,
+            detail=f"SceneScript PointCloud not available: {e}",
+        )
+    return PointCloud
 
-        ckpt_path = "./weights/scenescript_model_ase.ckpt"
-        if not os.path.exists(ckpt_path):
-            print(f"Warning: Model checkpoint not found at {ckpt_path}")
-            return
 
-        print("Loading SceneScript model...")
-        if torch.cuda.is_available():
-            model_wrapper = SceneScriptWrapper.load_from_checkpoint(ckpt_path).cuda()
-            print("Model loaded successfully on GPU")
-        else:
-            model_wrapper = SceneScriptWrapper.load_from_checkpoint(ckpt_path)
-            print("Model loaded successfully on CPU")
+def get_scenescript_state(request: Request) -> SceneScriptState:
+    """
+    Retrieve SceneScript state from app.state.
 
-    except Exception as e:
-        print(f"Error loading model: {str(e)}")
-        model_wrapper = None
+    Raises 503 if the model is not available so that endpoints can
+    rely on a fully initialized state.
+    """
+    state: SceneScriptState | None = getattr(request.app.state, "scenescript", None)
+    if state is None or state.model is None:
+        raise HTTPException(
+            status_code=503,
+            detail="SceneScript model not loaded. Please check model status.",
+        )
+    return state
 
 
 @router.get("/")
@@ -77,27 +69,24 @@ def read_root():
 
 
 @router.get("/model/status", response_model=ModelStatus)
-def get_model_status():
-    """Get the current model loading status"""
-    global model_wrapper
-    return ModelStatus(
-        loaded=model_wrapper is not None and SCENESCRIPT_AVAILABLE,
-        model_path="./weights/scenescript_model_ase.ckpt" if model_wrapper else None,
-        device="cuda" if model_wrapper and torch.cuda.is_available() else "cpu",
-    )
+def get_model_status(request: Request) -> ModelStatus:
+    """Get the current model loading status."""
+    state: SceneScriptState | None = getattr(request.app.state, "scenescript", None)
+    loaded = bool(state and state.model is not None)
+    device = getattr(state, "device", None) if state else None
+    model_path = getattr(state, "weights_path", None) if state else None
+    if loaded and device is None:
+        # Fallback to runtime check if device was not recorded
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+    return ModelStatus(loaded=loaded, model_path=model_path, device=device)
 
 
-@app.post("/inference", response_model=InferenceResponse)
-def run_inference(data: PointCloudData):
+@router.post("/inference", response_model=InferenceResponse)
+def run_inference(
+    data: PointCloudData,
+    state: SceneScriptState = Depends(get_scenescript_state),
+):
     """Run SceneScript inference on point cloud data"""
-    global model_wrapper
-
-    if not SCENESCRIPT_AVAILABLE:
-        raise HTTPException(status_code=503, detail="SceneScript modules not available.")
-
-    if model_wrapper is None:
-        raise HTTPException(status_code=503, detail="Model not loaded. Please check model status.")
-
     try:
         import time
 
@@ -110,7 +99,7 @@ def run_inference(data: PointCloudData):
             raise HTTPException(status_code=400, detail="Points must have 3 coordinates [x, y, z]")
 
         # Run inference
-        lang_seq = model_wrapper.run_inference(
+        lang_seq = state.model.run_inference(  # type: ignore[call-arg]
             points,
             nucleus_sampling_thresh=data.nucleus_sampling_thresh,
             verbose=data.verbose,
@@ -141,31 +130,27 @@ def run_inference(data: PointCloudData):
         raise HTTPException(status_code=500, detail=f"Inference failed: {str(e)}")
 
 
-@app.post("/inference/file")
+@router.post("/inference/file", response_model=InferenceResponse)
 def run_inference_from_uploaded_file(
     filename: str = Form(...),
     nucleus_sampling_thresh: float = Form(0.05),
     verbose: bool = Form(True),
+    state: SceneScriptState = Depends(get_scenescript_state),
 ):
     """Run SceneScript inference on previously uploaded point cloud file"""
-    global model_wrapper
-
-    if model_wrapper is None:
-        raise HTTPException(status_code=503, detail="Model not loaded. Please check model status.")
-
     try:
         import time
 
         start_time = time.time()
 
         # Construct the file path in the pointclouds directory
-        pointclouds_dir = "/home/playboigeorgy/scenescript_clone_v3/pointclouds"
-        file_path = os.path.join(pointclouds_dir, filename)
+        file_path = os.path.join(state.pointcloud_dir, filename)
 
         if not os.path.exists(file_path):
             raise HTTPException(status_code=404, detail=f"Point cloud file not found: {filename}")
 
         # Load point cloud using the SceneScript PointCloud class
+        PointCloud = _get_pointcloud_class(state.base_dir)
         point_cloud_obj = PointCloud.load_from_file(file_path)
         points = point_cloud_obj.points
 
@@ -176,11 +161,11 @@ def run_inference_from_uploaded_file(
             points = torch.FloatTensor(points)
 
         # Move to device if CUDA is available
-        if torch.cuda.is_available() and hasattr(model_wrapper, "device"):
-            points = points.to(model_wrapper.device)
+        if torch.cuda.is_available() and hasattr(state.model, "device"):
+            points = points.to(state.model.device)  # type: ignore[attr-defined]
 
         # Run inference using the model's run_inference method
-        lang_seq = model_wrapper.run_inference(
+        lang_seq = state.model.run_inference(  # type: ignore[call-arg]
             raw_point_cloud=points,
             nucleus_sampling_thresh=nucleus_sampling_thresh,
             verbose=verbose,
@@ -211,18 +196,14 @@ def run_inference_from_uploaded_file(
         raise HTTPException(status_code=500, detail=f"Inference failed: {str(e)}")
 
 
-@app.post("/inference/scene")
+@router.post("/inference/scene", response_model=InferenceResponse)
 def run_inference_on_scene_file(
     file: UploadFile = File(...),  # File from FormData
     nucleus_sampling_thresh: float = Form(0.05),  # FormData field
     verbose: bool = Form(True),  # FormData field
+    state: SceneScriptState = Depends(get_scenescript_state),
 ):
     """Run SceneScript inference on uploaded scene file"""
-    global model_wrapper
-
-    if model_wrapper is None:
-        raise HTTPException(status_code=503, detail="Model not loaded.")
-
     try:
         import time
 
@@ -233,11 +214,12 @@ def run_inference_on_scene_file(
             shutil.copyfileobj(file.file, buffer)
 
         # Load and process the point cloud
+        PointCloud = _get_pointcloud_class(state.base_dir)
         point_cloud_obj = PointCloud.load_from_file(temp_file_path)
         raw_point_cloud = torch.tensor(point_cloud_obj.points, dtype=torch.float32)
 
         # Run inference
-        lang_seq = model_wrapper.run_inference(
+        lang_seq = state.model.run_inference(  # type: ignore[call-arg]
             raw_point_cloud=raw_point_cloud,
             nucleus_sampling_thresh=nucleus_sampling_thresh,
             verbose=verbose,
@@ -271,25 +253,36 @@ def run_inference_on_scene_file(
         raise HTTPException(status_code=500, detail=f"Inference failed: {str(e)}")
 
 
-@app.get("/pointclouds")
-def list_available_pointclouds():
-    """List available point cloud files"""
-    pointclouds_dir = "/home/playboigeorgy/scenescript_clone_v3/pointclouds"
+@router.get("/pointclouds")
+def list_available_pointclouds(request: Request):
+    """List available point cloud files."""
+    state: SceneScriptState | None = getattr(request.app.state, "scenescript", None)
+    if not state:
+        raise HTTPException(status_code=503, detail="SceneScript state not initialized.")
+
+    pointclouds_dir = state.pointcloud_dir
     try:
         files = [f for f in os.listdir(pointclouds_dir) if f.endswith((".csv", ".csv.gz"))]
         return {"available_files": files}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error listing files: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error listing files: {str(e)}") from e
 
 
-@app.post("/upload")
+@router.post("/upload")
 async def upload_files(
-    semidense_points: UploadFile = File(None), trajectory: UploadFile = File(None)
+    request: Request,
+    semidense_points: UploadFile = File(None),
+    trajectory: UploadFile = File(None),
 ):
-    """Upload and store point cloud and trajectory files"""
+    """Upload and store point cloud and trajectory files."""
+    state: SceneScriptState | None = getattr(request.app.state, "scenescript", None)
+    if not state:
+        raise HTTPException(status_code=503, detail="SceneScript state not initialized.")
+
+    uploads_dir = state.uploads_dir
+    pointclouds_dir = state.pointcloud_dir
     try:
         # Create uploads directory if it doesn't exist
-        uploads_dir = "/home/playboigeorgy/scenescript_clone_v3/uploaded_data"
         os.makedirs(uploads_dir, exist_ok=True)
 
         uploaded_files = {}
@@ -332,7 +325,6 @@ async def upload_files(
 
         # Also copy semidense points to pointclouds directory for inference
         if semidense_points:
-            pointclouds_dir = "/home/playboigeorgy/scenescript_clone_v3/pointclouds"
             os.makedirs(pointclouds_dir, exist_ok=True)
 
             inference_filename = f"uploaded_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.csv.gz"
@@ -356,13 +348,17 @@ async def upload_files(
         }
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}") from e
 
 
-@app.get("/uploads")
-def list_uploaded_files():
-    """List all uploaded files"""
-    uploads_dir = "/home/playboigeorgy/scenescript_clone_v3/uploaded_data"
+@router.get("/uploads")
+def list_uploaded_files(request: Request):
+    """List all uploaded files."""
+    state: SceneScriptState | None = getattr(request.app.state, "scenescript", None)
+    if not state:
+        raise HTTPException(status_code=503, detail="SceneScript state not initialized.")
+
+    uploads_dir = state.uploads_dir
     try:
         if not os.path.exists(uploads_dir):
             return {"uploaded_files": []}
@@ -383,13 +379,19 @@ def list_uploaded_files():
 
         return {"uploaded_files": files}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error listing uploaded files: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail=f"Error listing uploaded files: {str(e)}"
+        ) from e
 
 
-@app.delete("/uploads/{filename}")
-def delete_uploaded_file(filename: str):
-    """Delete an uploaded file"""
-    uploads_dir = "/home/playboigeorgy/scenescript_clone_v3/uploaded_data"
+@router.delete("/uploads/{filename}")
+def delete_uploaded_file(filename: str, request: Request):
+    """Delete an uploaded file."""
+    state: SceneScriptState | None = getattr(request.app.state, "scenescript", None)
+    if not state:
+        raise HTTPException(status_code=503, detail="SceneScript state not initialized.")
+
+    uploads_dir = state.uploads_dir
     file_path = os.path.join(uploads_dir, filename)
 
     try:
@@ -399,4 +401,4 @@ def delete_uploaded_file(filename: str):
         os.remove(file_path)
         return {"success": True, "message": f"File {filename} deleted successfully"}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error deleting file: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error deleting file: {str(e)}") from e

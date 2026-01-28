@@ -18,10 +18,10 @@ from llama_index.node_parser.docling import DoclingNodeParser
 from llama_index.readers.docling import DoclingReader
 from llama_index.vector_stores.postgres import PGVectorStore
 
-from ml_service.dependencies import get_embedder, get_llm_model, get_vector_store
+from ml_service.dependencies import get_embedder, get_llm_model, get_vector_store, require_bearer
 from ml_service.models.docling_models import QueryRequest
 
-router = APIRouter(prefix="/docling", tags=["rag"])
+router = APIRouter(prefix="/docling", tags=["rag"], dependencies=[Depends(require_bearer)])
 reader = DoclingReader(export_type=DoclingReader.ExportType.JSON)
 node_parser = DoclingNodeParser()
 SOURCE = "https://arxiv.org/pdf/2408.09869"

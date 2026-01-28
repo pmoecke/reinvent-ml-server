@@ -1,7 +1,6 @@
-from typing import Annotated
-
 from pydantic import BaseModel, Field
 
 
 class QueryRequest(BaseModel):
-    query: Annotated[str, Field(...)]
+    # The standard Pydantic V2 way to define a required field
+    query: str = Field(...)
