@@ -331,9 +331,11 @@ async def upload_files(
             inference_path = os.path.join(pointclouds_dir, inference_filename)
 
             # Copy the file for inference
-            with open(inference_path, "wb") as buffer:
-                with open(uploaded_files["semidense_points"]["path"], "rb") as source:
-                    buffer.write(source.read())
+            with (
+                open(inference_path, "wb") as buffer,
+                open(uploaded_files["semidense_points"]["path"], "rb") as source,
+            ):
+                buffer.write(source.read())
 
             uploaded_files["inference_file"] = {
                 "filename": inference_filename,

@@ -6,8 +6,10 @@ dist/
 wheels/
 *.egg-info
 
-# Scenescripts weights
-*/weights
+# Scenescript runtime data
+scenescript/uploaded_data
+scenescript/pointclouds
+scenescript/weights
 
 # Virtual environments
 .venv
